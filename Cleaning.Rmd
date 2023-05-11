@@ -1,0 +1,252 @@
+---
+title: "431_project"
+author: "Yuhong Shao"
+date: "2023-03-26"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+setwd("C:/Users/yuhon/Documents/2023 winter/stat431/project")
+```
+
+```{r}
+library(tidyverse)
+library(readxl)
+library(lme4)
+library(lmerTest)
+library(coda)
+library(mvtnorm)
+library(lattice)
+library(optimx)
+library(stringr)
+```
+
+## Combine and clean data
+
+```{r}
+#helper function that reads in the data given specified years
+read_data <- function(years, seasons, folder_path) {
+  incar_data = NULL
+  col_names = NULL
+  for (year in years) {
+    for (season in seasons) {
+      #makeup file_path
+      file_path = paste0(folder_path, year, "_", season, ".xls")
+      #if seasonal data doesn't exist, then read next
+      if (!file.exists(file_path)) {
+        break;
+      }
+      cur_data <- read_excel(file_path, skip = 5)
+      print(file_path)
+      
+    
+      #append
+      if (is.null(incar_data)){
+        incar_data <- cur_data
+        col_names = colnames(incar_data)
+      } else {
+        #align columns
+        if (ncol(cur_data) > ncol(incar_data)) {
+          del_index <- c()
+          for (i in 1:length(colnames(cur_data))) {
+            col_name = colnames(cur_data)[i]
+            if (! (col_name %in% colnames(incar_data))) {
+              del_index <- append(del_index, i)
+            }
+          }
+          cur_data <- subset(cur_data, select = -del_index)
+        }
+      
+        if (ncol(cur_data) < ncol(incar_data)) {
+          del_index <- c()
+          for (i in 1:length(colnames(incar_data))) {
+            col_name = colnames(incar_data)[i]
+            if (! (col_name %in% colnames(cur_data))) {
+              del_index <- append(del_index, i)
+            }
+          }
+          incar_data <- subset(incar_data, select = -del_index)
+        }
+
+        incar_data <- rbind(incar_data, cur_data)
+      }
+    }
+  }
+  incar_data
+}
+```
+
+```{r}
+years <- c("2020", "2021", "2022")
+seasons <- c("mar", "jun", "sep", "dec")
+folder_path <- "il_data/post_covid/"
+post_data <- read_data(years, seasons, folder_path)
+```
+
+```{r}
+write.csv(post_data, "il_data/post_covid.csv", row.names=FALSE)
+```
+
+# Exploratory data Analysis
+```{r}
+#check if there are duplicating offense in three years
+post_data %>% group_by(Name, `Date of Birth`) %>%
+  count()
+```
+
+
+```{r}
+years <- c("2017", "2018", "2019")
+seasons <- c("mar", "jun", "sep", "dec")
+folder_path <- "il_data/pre_covid/"
+pre_data <- read_data(years, seasons, folder_path)
+```
+
+
+## Binary Inference between Races (White vs Black)
+```{r}
+#data preparation for illinois
+n = nrow(il_incar)
+n1 = nrow(white_il) + nrow(black_il)
+#for il
+white_il <- il_incar %>% filter(Race == "White")
+black_il <- il_incar %>% filter( Race == "Black")
+
+nrow(white_il)/n1
+```
+
+
+# Naive Bayes Example for Return Prision rate classification
+```{r}
+#read in one dataset
+data <- read_excel("C:/Users/yuhon/Documents/2023 winter/stat431/project/il_data/post_covid/2020_mar.xls", skip = 5)
+cols <- c("Sex", "Race", "Veteran Status", "Admission Type", "Crime Class", "Sentence Years", "Date of Birth")
+
+#transform 
+cleaned_data <- data %>% select(c(Sex, Race, `Veteran Status`, `Admission Type`, `Crime Class`, `Sentence Years`, `Date of Birth`)) %>% 
+  filter(grepl("New sentence", `Admission Type`) | grepl("recommitted", `Admission Type`)) %>%
+  mutate(return = ifelse(grepl("recommitted", `Admission Type`), 1, 0)) %>%
+  mutate(age = ) %>%
+  drop_na()
+  
+head(cleaned_data)
+```
+
+
+# Regression Example for Sentence Year
+```{r}
+#turn categorical variables into factors
+data <- read_excel("C:/Users/yuhon/Documents/2023 winter/stat431/project/il_data/post_covid/2020_mar.xls", skip = 5)
+cols <- c("Sex", "Race", "Veteran Status", "Admission Type", "Crime Class", "Sentence Years", "Date of Birth")
+
+#transform 
+cleaned_data <- data %>%
+  select(c(Sex, Race, `Veteran Status`, `Admission Type`, `Crime Class`, `Sentence Years`, `Date of Birth`)) %>% #select columns we want
+  mutate(sentence_yr = ifelse(`Sentence Years` == 'LIFE', 100, as.numeric(`Sentence Years`))) %>% #turn sentence year to numerical
+  #categorize race into black, white, other
+  mutate(Age = as.integer(difftime( Sys.Date(), as.Date(`Date of Birth`, format = "%Y-%m-%d"), units = 'days')/365.25)) %>% #calculate age based on dob
+  drop_na()
+  
+head(cleaned_data)
+write.csv(cleaned_data, "il_data/small_cleaned.csv", row.names=FALSE)
+```
+
+```{r}
+colnames(cleaned_data)
+cleaned_data$Sex <- as.factor(cleaned_data$Sex)
+cleaned_data$Race <- as.factor(cleaned_data$Race)
+cleaned_data$`Veteran Status` <- as.factor(cleaned_data$`Veteran Status`)
+cleaned_data$`Admission Type` <- as.factor(cleaned_data$`Admission Type`)
+cleaned_data$`Crime Class` <- as.factor(cleaned_data$`Crime Class`)
+```
+
+
+```{r}
+brm.2 <- brm(sentence_yr ~  Sex + Race + Age, 
+             
+             brmsfamily("gaussian"), 
+     
+             data = na.omit(cleaned_data), 
+             
+             chains = 1, #specify the number of Markov chains
+             
+             cores = getOption("mc.cores", 1),
+             
+             iter = 3000, warmup = 1500, thin = 1,
+             
+             prior =  c(prior(normal(0, 3), "b"), # set normal prior on regression coefficients (mean of 0, location of 3)
+                        
+                        prior(normal(0, 3), "Intercept"))) # set normal prior on intercept (mean of 0, location of 3)
+```
+
+
+```{r}
+clean <- read.csv("il_data/small_cleaned.csv")
+clean$Race.new <- recode(clean$Race, "American Indian" = "other", "Asian" = "other",
+                         "Bi-Racial" = "other", "Hispanic" = "other", "Unknown" = "other")
+clean$Race.new <- as.factor(clean$Race.new)
+clean$Sex <- as.factor(clean$Sex)
+
+options(mc.cores = parallel::detectCores())
+t0<-Sys.time()
+
+#summary(model.simple <- brm(Sentence.Years~ 1  , data=clean2))
+modelRI.brm <- brm(sentence_yr ~ Sex+Age+Race.new,
+         data=clean,
+         family=brmsfamily("gaussian"),
+         save_all_pars=TRUE,
+         cores=1,
+         silent=FALSE)
+```
+#Read and combine two years of pre post data
+```{r}
+years <- c("2021", "2020", "2019")
+seasons <- c("mar", "jun", "sep", "dec")
+folder_path <- "il_data/"
+data <- read_data(years, seasons, folder_path)
+write.csv(data, "il_data/three_years.csv", row.names=FALSE)
+```
+
+
+
+```{r}
+three_data <- read_csv("C:/Users/yuhon/Documents/2023 winter/stat431/project/il_data/three_years.csv")
+cols <- c("Sex", "Race", "Veteran Status", "Admission Type", "Crime Class", "Sentence Years", "Date of Birth", "Custody Date", "Name")
+
+#transform 
+cleaned_data <- three_data %>%
+  select(c(Sex, Race, `Veteran Status`, `Admission Type`, `Crime Class`, `Sentence Years`, `Date of Birth`, `Custody Date`, `Name`)) %>% #select columns we want
+  filter(`Custody Date` > as.Date("2019-01-01") & `Custody Date` < as.Date('2021-6-30')) %>% #filter the custody date in present date range
+  mutate(sentence_yr = ifelse(`Sentence Years` == 'LIFE', 100, as.numeric(`Sentence Years`))) %>% #turn sentence year to numerical
+  mutate(Age = as.integer(difftime( Sys.Date(), as.Date(`Date of Birth`, format = "%Y-%m-%d"), units = 'days')/365.25)) %>% #calculate age based on dob
+  mutate(IsPost = ifelse(`Custody Date` > as.Date("2020-03-31"), 1, 0)) %>% #create post binary variable
+  mutate(IsWhite = ifelse(Race == "White", 1, 0)) %>% #encode Race into White/non White
+  mutate(`Crime Class` = case_when(
+    `Crime Class` == "Class 1" ~ 4,
+    `Crime Class` == "Class 2" ~ 3,
+    `Crime Class` == "Class 3" ~ 2,
+    `Crime Class` == "Class 4" ~ 1,
+    `Crime Class` == "Class X" ~ 5,
+    `Crime Class` == "Murder" ~ 6,
+    .default = NULL
+  )) %>% #mutate crime class into ordinal variable
+  #filter(grepl("New sentence", `Admission Type`) | grepl("recommitted", `Admission Type`)) %>%
+  #mutate(`IsReturn` = ifelse(grepl("recommitted", `Admission Type`), 1, 0)) %>%
+  filter(`Veteran Status` != "Unknown") %>%
+  drop_na()
+
+#remove duplicating people
+people <- cleaned_data %>%
+  group_by(`Custody Date`, Name, `Date of Birth`) %>%
+  count()
+
+single_data <- cleaned_data %>%
+  distinct(`Custody Date`, Name, `Date of Birth`, .keep_all = TRUE)
+write.csv(single_data, "il_data/nodupe_threeyear.csv", row.names=FALSE)
+```
+
+```{r}
+single_data %>% group_by(`Admission Type`) %>% count()
+```
+
